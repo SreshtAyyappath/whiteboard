@@ -1,11 +1,14 @@
 import { useRef, useEffect } from 'react';
 import { Client } from '@stomp/stompjs';
+import { useParams } from "react-router-dom";
 
 export default function Whiteboard() {
   const canvasRef = useRef(null);
   const isDrawing = useRef(false);
   const stompClient = useRef(null);
-  const roomId = 'room123';
+  const {roomId} = useParams();
+  const strokes = useRef([]);
+  const currentStroke = useRef(null);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -22,7 +25,7 @@ export default function Whiteboard() {
     console.log("creating socket my boii")
     
     stompClient.current = new Client({
-      brokerURL: 'ws://localhost:8080/ws', // Direct WebSocket URL
+      brokerURL: 'ws://192.168.1.103:8080/ws', // Direct WebSocket URL
       debug: (str) => console.log('[STOMP DEBUG]', str),
       onConnect: (frame) => {
         console.log('🟢 Connected to WebSocket', frame);
