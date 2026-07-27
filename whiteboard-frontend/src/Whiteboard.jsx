@@ -1,6 +1,7 @@
 import { useRef, useEffect } from 'react';
 import { Client } from '@stomp/stompjs';
 import { useParams } from "react-router-dom";
+import "./index.css";
 
 export default function Whiteboard() {
   const canvasRef = useRef(null);
@@ -9,6 +10,10 @@ export default function Whiteboard() {
   const {roomId} = useParams();
   const strokes = useRef([]);
   const currentStroke = useRef(null);
+  const isSpacePressed = useRef(false);
+  const isPanning = useRef(false);
+  const lastMousePosition = useRef({ x: 0, y: 0 });
+  const camera = useRef({ x: 0, y: 0, zoom: 1 });
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -21,8 +26,27 @@ export default function Whiteboard() {
     ctx.lineCap = 'round';
     ctx.strokeStyle = 'black';
 
+    const handleKeyDown = (e) => {
+      if(e.code === 'Space') {
+        e.preventDefault();          // <- prevent browser scrolling
+        isSpacePressed.current = true;
+        console.log("Space pressed, panning enabled");
+      }
+    };
+
+    const handleKeyUp = (e) => {
+      if(e.code === 'Space') {
+        e.preventDefault();
+        isSpacePressed.current = false;
+        console.log("Space released, panning disabled");
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
+
     // Connect to WebSocket using native WebSocket (no SockJS)
-    console.log("creating socket my boii")
+    console.log("Creating socket connection")
     
     stompClient.current = new Client({
       brokerURL: 'ws://192.168.1.103:8080/ws', // Direct WebSocket URL
@@ -35,13 +59,13 @@ export default function Whiteboard() {
         });
       },
       onStompError: (frame) => {
-        console.error('❌ STOMP error:', frame);
+        console.error('STOMP error:', frame);
       },
       onWebSocketError: (error) => {
-        console.error('❌ WebSocket error:', error);
+        console.error('WebSocket error:', error);
       },
       onWebSocketClose: (event) => {
-        console.log('🔴 WebSocket closed:', event);
+        console.log('WebSocket closed:', event);
       },
       reconnectDelay: 5000,
       heartbeatIncoming: 4000,
@@ -50,17 +74,34 @@ export default function Whiteboard() {
 
     stompClient.current.activate();
 
-    // Cleanup on unmount
     return () => {
       if (stompClient.current) {
         stompClient.current.deactivate();
       }
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp)
     };
   }, []);
 
   const startDrawing = (e) => {
+    if(isSpacePressed.current) {
+      console.log("Panning started");
+      isPanning.current = true;
+      lastMousePosition.current = { x: e.clientX, y: e.clientY };
+      return;
+    }
+
     isDrawing.current = true;
+
+
     const { offsetX, offsetY } = e.nativeEvent;
+    const worldX = (offsetX + camera.current.x) / camera.current.zoom;
+    const worldY = (offsetY + camera.current.y) / camera.current.zoom;
+    
+    const newStroke = { id: crypto.randomUUID(), points: [{ x: worldX, y: worldY }] };
+    currentStroke.current = newStroke;
+    strokes.current.push(newStroke);
+    
     const ctx = canvasRef.current.getContext('2d');
     ctx.beginPath();
     ctx.moveTo(offsetX, offsetY);
@@ -68,8 +109,33 @@ export default function Whiteboard() {
   };
 
   const draw = (e) => {
+    if(isPanning.current) {
+      console.log("Panning in progress");
+      const deltaX = e.clientX - lastMousePosition.current.x;
+      const deltaY = e.clientY - lastMousePosition.current.y;
+      camera.current.x -= deltaX;
+      camera.current.y -= deltaY;
+      lastMousePosition.current = { x: e.clientX, y: e.clientY };
+      redrawCanvas();
+      return;
+    }
+
     if (!isDrawing.current) return;
     const { offsetX, offsetY } = e.nativeEvent;
+
+    // const newStroke = { id: crypto.randomUUID, points: [{ x: offsetX, y: offsetY }] };
+    // currentStroke.current = newStroke;
+    // strokes.current.push(newStroke);
+
+    const worldX = (offsetX + camera.current.x) / camera.current.zoom;
+    const worldY = (offsetY + camera.current.y) / camera.current.zoom;
+
+    currentStroke.current.points.push({
+        x: worldX,
+        y: worldY,
+    });
+
+
     const ctx = canvasRef.current.getContext('2d');
     ctx.lineTo(offsetX, offsetY);
     ctx.stroke();
@@ -78,13 +144,14 @@ export default function Whiteboard() {
 
   const stopDrawing = () => {
     isDrawing.current = false;
+    isPanning.current = false;
     const ctx = canvasRef.current.getContext('2d');
-    ctx.closePath();
+    // ctx.closePath();
   };
 
   // Send drawing data to backend
   const sendDrawData = (x, y, isNewStroke) => {
-    console.log("sending data boii: " + x + " " + y);
+    console.log("Sending Coordinates to Backend: " + x + " " + y);
     if (stompClient.current && stompClient.current.connected) {
       const message = {
         x,
@@ -96,11 +163,10 @@ export default function Whiteboard() {
         body: JSON.stringify(message),
       });
     } else {
-      console.log("⚠️ STOMP client not connected, cannot send data");
+      console.log("STOMP client not connected, cannot send data");
     }
   };
 
-  // Draw from other users
   const drawFromRemote = ({ x, y, isNewStroke }) => {
     const ctx = canvasRef.current.getContext('2d');
     if (isNewStroke) {
@@ -118,6 +184,43 @@ export default function Whiteboard() {
     console.log(imageData);
   };
 
+  const redrawCanvas = () => {
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext('2d');
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    ctx.save();
+
+    const { x, y, zoom } = camera.current;
+
+    ctx.translate(-x, -y);
+    ctx.scale(zoom, zoom);
+
+    // Draw ALL strokes using world coordinates
+    console.log("Strokes: ", strokes.current);
+    strokes.current.forEach(stroke => {
+      if (stroke.points.length === 0) return;
+
+      ctx.beginPath();
+
+      ctx.moveTo(
+        stroke.points[0].x,
+        stroke.points[0].y
+      );
+
+      for (let i = 1; i < stroke.points.length; i++) {
+        ctx.lineTo(
+          stroke.points[i].x,
+          stroke.points[i].y
+        );
+      }
+      ctx.stroke();
+    });
+
+    ctx.restore();
+  };
+
   return (
     <>
       <canvas
@@ -127,15 +230,18 @@ export default function Whiteboard() {
         onMouseUp={stopDrawing}
         onMouseLeave={stopDrawing}
         style={{
-          display: 'block',
-          backgroundColor: 'white',
-          border: '2px solid black',
+            position: "fixed",
+            inset: 0,
+            width: "100vw",
+            height: "100vh",
+            display: "block",
+            background: "white",
         }}
       />
       <button
         onClick={captureCanvas}
         style={{
-          position: 'absolute',
+          position: 'fixed',
           top: 10,
           left: 10,
           padding: '8px 12px',
