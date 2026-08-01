@@ -154,9 +154,12 @@ export default function Whiteboard() {
     console.log("Sending Coordinates to Backend: " + x + " " + y);
     if (stompClient.current && stompClient.current.connected) {
       const message = {
+        roomId,
+        type: "STROKE_POINT",
+        strokeId: currentStroke.current.id,
         x,
         y,
-        isNewStroke,
+        timestamp: Date.now()
       };
       stompClient.current.publish({
         destination: `/app/draw/${roomId}`,
